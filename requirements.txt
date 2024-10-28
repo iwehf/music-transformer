@@ -2,3 +2,9 @@ setuptools>=65.5.1
 mido>=1.2.9
 torch>=2.1.0
 numpy>=1.19.2
+pydantic
+sqlalchemy
+aiosqlite
+fastapi
+uvicorn
+websockets
