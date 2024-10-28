@@ -12,15 +12,20 @@ for music-transformer, or at https://www.gnu.org/licenses/gpl-3.0.html.
 """
 
 import argparse
-import time
 import os
+import time
+
 import torch
 import torch.nn.functional as F
 from torch import nn, optim
 from torch.utils.data import DataLoader, TensorDataset
+
 from hparams import device
 from masking import create_mask
 from model import MusicTransformer
+
+from fl_client import TrainWorker
+from fl_task_contract import FLTask
 
 """
 Functionality to train a Music Transformer on a single CPU or single GPU
@@ -53,11 +58,11 @@ def transformer_lr_schedule(d_model, step_num, warmup_steps=4000):
     step_num = step_num + 1e-6  # avoid division by 0
 
     if type(step_num) == torch.Tensor:
-        arg = torch.min(step_num ** -0.5, step_num * (warmup_steps ** -1.5))
+        arg = torch.min(step_num**-0.5, step_num * (warmup_steps**-1.5))
     else:
-        arg = min(step_num ** -0.5, step_num * (warmup_steps ** -1.5))
+        arg = min(step_num**-0.5, step_num * (warmup_steps**-1.5))
 
-    return (d_model ** -0.5) * arg
+    return (d_model**-0.5) * arg
 
 
 def loss_fn(prediction, target, criterion=F.cross_entropy):
@@ -73,8 +78,8 @@ def loss_fn(prediction, target, criterion=F.cross_entropy):
     Returns:
         masked loss between prediction and target
     """
-    mask = torch.ne(target, torch.zeros_like(target))           # ones where target is 0
-    _loss = criterion(prediction, target, reduction='none')     # loss before masking
+    mask = torch.ne(target, torch.zeros_like(target))  # ones where target is 0
+    _loss = criterion(prediction, target, reduction="none")  # loss before masking
 
     # multiply mask to loss elementwise to zero out pad positions
     mask = mask.to(_loss.dtype)
@@ -105,6 +110,7 @@ def train_step(model: MusicTransformer, opt, sched, inp, tar):
     opt.zero_grad()
     loss = loss_fn(predictions.transpose(-1, -2), tar)
     loss.backward()
+
     opt.step()
     sched.step()
 
@@ -147,8 +153,16 @@ class MusicTransformerTrainer:
     To load a checkpoint, call trainer.load( (optional) ckpt_path)
     """
 
-    def __init__(self, hparams_, datapath, batch_size, warmup_steps=4000,
-                 ckpt_path="music_transformer_ckpt.pt", load_from_checkpoint=False):
+    def __init__(
+        self,
+        client: TrainWorker,
+        hparams_,
+        datapath,
+        batch_size,
+        warmup_steps=4000,
+        ckpt_path="music_transformer_ckpt.pt",
+        load_from_checkpoint=False,
+    ):
         """
         Args:
             hparams_: hyperparameters of the model
@@ -159,6 +173,8 @@ class MusicTransformerTrainer:
             load_from_checkpoint (bool, optional): if true, on instantiating the trainer, this will load a previously
                                                    saved checkpoint at ckpt_path
         """
+        self.client = client
+
         # get the data
         self.datapath = datapath
         self.batch_size = batch_size
@@ -166,24 +182,32 @@ class MusicTransformerTrainer:
 
         # max absolute position must be able to acount for the largest sequence in the data
         if hparams_["max_abs_position"] > 0:
-            hparams_["max_abs_position"] = max(hparams_["max_abs_position"], data.shape[-1])
+            hparams_["max_abs_position"] = max(
+                hparams_["max_abs_position"], data.shape[-1]
+            )
 
         # train / validation split: 80 / 20
         train_len = round(data.shape[0] * 0.8)
         train_data = data[:train_len]
         val_data = data[train_len:]
-        print(f"There are {data.shape[0]} samples in the data, {len(train_data)} training samples and {len(val_data)} "
-              "validation samples")
+        print(
+            f"There are {data.shape[0]} samples in the data, {len(train_data)} training samples and {len(val_data)} "
+            "validation samples"
+        )
 
         # datasets and dataloaders: split data into first (n-1) and last (n-1) tokens
         self.train_ds = TensorDataset(train_data[:, :-1], train_data[:, 1:])
-        self.train_dl = DataLoader(dataset=self.train_ds, batch_size=batch_size, shuffle=True)
+        self.train_dl = DataLoader(
+            dataset=self.train_ds, batch_size=batch_size, shuffle=True
+        )
 
         self.val_ds = TensorDataset(val_data[:, :-1], val_data[:, 1:])
-        self.val_dl = DataLoader(dataset=self.val_ds, batch_size=batch_size, shuffle=True)
+        self.val_dl = DataLoader(
+            dataset=self.val_ds, batch_size=batch_size, shuffle=True
+        )
 
         # create model
-        self.model = MusicTransformer(**hparams_).to(device) 
+        self.model = MusicTransformer(**hparams_).to(device)
         self.hparams = hparams_
 
         # setup training
@@ -191,7 +215,9 @@ class MusicTransformerTrainer:
         self.optimizer = optim.Adam(self.model.parameters(), lr=1.0, betas=(0.9, 0.98))
         self.scheduler = optim.lr_scheduler.LambdaLR(
             self.optimizer,
-            lambda x: transformer_lr_schedule(self.hparams['d_model'], x, self.warmup_steps)
+            lambda x: transformer_lr_schedule(
+                self.hparams["d_model"], x, self.warmup_steps
+            ),
         )
 
         # setup checkpointing / saving
@@ -222,7 +248,7 @@ class MusicTransformerTrainer:
             "train_losses": self.train_losses,
             "validation_losses": self.val_losses,
             "warmup_steps": self.warmup_steps,
-            "hparams": self.hparams
+            "hparams": self.hparams,
         }
 
         torch.save(ckpt, self.ckpt_path)
@@ -257,7 +283,9 @@ class MusicTransformerTrainer:
         self.optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         self.scheduler = optim.lr_scheduler.LambdaLR(
             self.optimizer,
-            lambda x: transformer_lr_schedule(self.hparams['d_model'], x, self.warmup_steps)
+            lambda x: transformer_lr_schedule(
+                self.hparams["d_model"], x, self.warmup_steps
+            ),
         )
         self.scheduler.load_state_dict(ckpt["scheduler_state_dict"])
 
@@ -267,10 +295,10 @@ class MusicTransformerTrainer:
 
         return
 
-    def fit(self, epochs):
+    def fit(self, epochs, iter_per_epoch: int = 100):
         """
         Training loop to fit the model to the data stored at the passed in datapath. If KeyboardInterrupt at anytime
-        during the training loop, and if progresss being printed, this method will save a checkpoint at the 
+        during the training loop, and if progresss being printed, this method will save a checkpoint at the
         passed-in ckpt_path
 
         Args:
@@ -286,7 +314,7 @@ class MusicTransformerTrainer:
         print("Beginning training...")
         print(time.strftime("%Y-%m-%d %H:%M"))
         model = torch.compile(self.model)
-        torch.set_float32_matmul_precision("high") # this speeds up traning
+        torch.set_float32_matmul_precision("high")  # this speeds up traning
 
         try:
             for epoch in range(epochs):
@@ -295,7 +323,6 @@ class MusicTransformerTrainer:
 
                 model.train()
                 iterations = 0
-                iter_per_epoch = 100
                 while iterations < iter_per_epoch:
                     for train_inp, train_tar in self.train_dl:
                         loss = train_step(
@@ -309,35 +336,53 @@ class MusicTransformerTrainer:
                         iterations += 1
                         if iterations == iter_per_epoch:
                             break
+                
+                t0 = time.time()
+                weights = {name: p.detach() for name, p in model.named_parameters()}
+                self.client.send_data(weights)
+                agg_weights = self.client.get_agg_data()
+                with torch.no_grad():
+                    for name, p in model.named_parameters():
+                        p.copy_(agg_weights[name])
+                t1 = time.time()
 
+                # mean losses for the epoch
+                train_mean = sum(train_epoch_losses) / len(train_epoch_losses)
+                # store complete history of losses in member lists and relative history for this session in output lists
+                self.train_losses.append(train_mean)
+                train_losses.append(train_mean)
+                print(
+                    f"Epoch {epoch } Train Time taken {round(time.time() - start, 2)} seconds "
+                    f"Aggregation time {t1 - t0} "
+                    f"Train Loss {train_losses[-1]}"
+                )
+
+                val_start = time.time()
                 model.eval()
                 for val_inp, val_tar in self.val_dl:
                     loss = val_step(model, val_inp, val_tar)
                     val_epoch_losses.append(loss)
 
                 # mean losses for the epoch
-                train_mean = sum(train_epoch_losses) / len(train_epoch_losses)
                 val_mean = sum(val_epoch_losses) / len(val_epoch_losses)
 
-                # store complete history of losses in member lists and relative history for this session in output lists
-                self.train_losses.append(train_mean)
-                train_losses.append(train_mean)
+                self.client.send_metric(
+                    {"count": len(val_epoch_losses), "loss": sum(val_epoch_losses)}
+                )
+
                 self.val_losses.append(val_mean)
                 val_losses.append(val_mean)
 
-                print(f"Epoch {epoch } Time taken {round(time.time() - start, 2)} seconds "
-                    f"Train Loss {train_losses[-1]} Val Loss {val_losses[-1]}")
+                print(
+                    f"Epoch {epoch } Validation Time taken {round(time.time() - val_start, 2)} seconds "
+                    f"Val Loss {val_losses[-1]}"
+                )
                 start = time.time()
-
-        except KeyboardInterrupt:
-            pass
-
-        print("Checkpointing...")
-        self.save()
-        print("Done")
-        print(time.strftime("%Y-%m-%d %H:%M"))
-
-        return train_losses, val_losses
+        finally:
+            print("Checkpointing...")
+            self.save()
+            print("Done")
+            print(time.strftime("%Y-%m-%d %H:%M"))
 
 
 if __name__ == "__main__":
@@ -353,67 +398,143 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         prog="train.py",
-        description="Train a Music Transformer on single tensor dataset of preprocessed MIDI files"
+        description="Train a Music Transformer on single tensor dataset of preprocessed MIDI files",
     )
 
     # trainer arguments
-    parser.add_argument("datapath", help="path at which preprocessed MIDI files are stored as a single tensor after "
-                                         "being translated into an event vocabulary")
-    parser.add_argument("ckpt_path", help="path at which to load / store checkpoints while training; "
-                                          "KeyboardInterrupt while training to checkpoint the model; MUST end in .pt "
-                                          "or .pth", type=str)
-    parser.add_argument("save_path", help="path at which to save the model's state dict and hyperparameters after "
-                                          "training; model will only be saved if the training loop finishes before a "
-                                          "KeyboardInterrupt; MUST end in .pt or .pth", type=str)
-    parser.add_argument("epochs", help="number of epochs to train for", type=check_positive)
-    parser.add_argument("-bs", "--batch-size", help="number of sequences to batch together to compute a single "
-                                                    "training step while training; default: 32", type=check_positive)
-    parser.add_argument("-l", "--load-checkpoint", help="flag to load a previously saved checkpoint from which to "
-                                                        "resume training; default: False", action="store_true")
-    parser.add_argument("-w", "--warmup-steps", help="number of warmup steps for transformer learning rate scheduler; "
-                                                     "if loading from checkpoint, this will be overwritten by saved "
-                                                     "value; default: 4000", type=int)
+    parser.add_argument(
+        "datapath",
+        help="path at which preprocessed MIDI files are stored as a single tensor after "
+        "being translated into an event vocabulary",
+    )
+    parser.add_argument(
+        "ckpt_path",
+        help="path at which to load / store checkpoints while training; "
+        "KeyboardInterrupt while training to checkpoint the model; MUST end in .pt "
+        "or .pth",
+        type=str,
+    )
+    parser.add_argument(
+        "save_path",
+        help="path at which to save the model's state dict and hyperparameters after "
+        "training; model will only be saved if the training loop finishes before a "
+        "KeyboardInterrupt; MUST end in .pt or .pth",
+        type=str,
+    )
+    parser.add_argument(
+        "-bs",
+        "--batch-size",
+        help="number of sequences to batch together to compute a single "
+        "training step while training; default: 32",
+        type=check_positive,
+    )
+    parser.add_argument(
+        "-l",
+        "--load-checkpoint",
+        help="flag to load a previously saved checkpoint from which to "
+        "resume training; default: False",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-w",
+        "--warmup-steps",
+        help="number of warmup steps for transformer learning rate scheduler; "
+        "if loading from checkpoint, this will be overwritten by saved "
+        "value; default: 4000",
+        type=int,
+    )
+    parser.add_argument(
+        "-ipe"
+        "--iter-per-epoch",
+        help="iteration per epoch, default: 100",
+        type=int,
+        default=100,
+        dest="iter_per_epoch"
+    )
 
     # hyperparameters
-    parser.add_argument("-d", "--d-model",
-                        help="music transformer hidden dimension size; if loading from checkpoint "
-                             "this will be overwritten by saved hparams; default: 128", type=check_positive)
-    parser.add_argument("-nl", "--num-layers",
-                        help="number of transformer decoder layers in the music transformer; if loading from "
-                             "checkpoint, this will be overwritten by saved hparams; default: 3", type=check_positive)
-    parser.add_argument("-nh", "--num-heads",
-                        help="number of attention heads over which to compute multi-head relative attention in the "
-                             "music transformer; if loading from checkpoint, this will be overwritten by saved "
-                             "hparams; default: 8", type=check_positive)
-    parser.add_argument("-dff", "--d-feedforward",
-                        help="hidden dimension size of pointwise FFN layers in the music transformer; if loading from "
-                             "checkpoint, this will be overwritten by saved hparams; default: 512", type=check_positive)
-    parser.add_argument("-mrd", "--max-rel-dist",
-                        help="maximum relative distance between tokens to consider in relative attention calculation "
-                             "in the music transformer; if loading from checkpoint, this will be overwritten by saved "
-                             "hparams; default: 1024", type=check_positive)
-    parser.add_argument("-map", "--max-abs-position",
-                        help="maximum absolute length of an input sequence; set this to a very large value to be able "
-                             "to generalize to longer sequences than in the dataset; if a sequence longer than the "
-                             "passed in value is passed into the dataset, max_abs_position is set to that value not "
-                             "the passed in; if loading from checkpoint, this will be overwritten by saved hparams; "
-                             "default: 20000", type=int)
-    parser.add_argument("-vs", "--vocab-size",
-                        help="length of the vocabulary in which the input training data has been tokenized. if "
-                             "loading from checkpoint, this will be overwritten by saved hparams; default: 416 (size "
-                             "of Oore et. al MIDI vocabulary)", type=check_positive)
-    parser.add_argument("-nb", "--no-bias",
-                        help="flag to not use a bias in the linear layers of the music transformer; if loading from "
-                             "checkpoint, this will be overwritten by saved hparams; default: False",
-                        action="store_false")
-    parser.add_argument("-dr", "--dropout",
-                        help="dropout rate for training the model; if loading from checkpoint, this will be "
-                             "overwritten by saved hparams; default: 0.1")
-    parser.add_argument("-le", "--layernorm-eps",
-                        help="epsilon in layernorm layers to avoid zero division; if loading from checkpoint, "
-                             "this will be overwritten by saved hparams; default: 1e-6")
+    parser.add_argument(
+        "-d",
+        "--d-model",
+        help="music transformer hidden dimension size; if loading from checkpoint "
+        "this will be overwritten by saved hparams; default: 128",
+        type=check_positive,
+    )
+    parser.add_argument(
+        "-nl",
+        "--num-layers",
+        help="number of transformer decoder layers in the music transformer; if loading from "
+        "checkpoint, this will be overwritten by saved hparams; default: 3",
+        type=check_positive,
+    )
+    parser.add_argument(
+        "-nh",
+        "--num-heads",
+        help="number of attention heads over which to compute multi-head relative attention in the "
+        "music transformer; if loading from checkpoint, this will be overwritten by saved "
+        "hparams; default: 8",
+        type=check_positive,
+    )
+    parser.add_argument(
+        "-dff",
+        "--d-feedforward",
+        help="hidden dimension size of pointwise FFN layers in the music transformer; if loading from "
+        "checkpoint, this will be overwritten by saved hparams; default: 512",
+        type=check_positive,
+    )
+    parser.add_argument(
+        "-mrd",
+        "--max-rel-dist",
+        help="maximum relative distance between tokens to consider in relative attention calculation "
+        "in the music transformer; if loading from checkpoint, this will be overwritten by saved "
+        "hparams; default: 1024",
+        type=check_positive,
+    )
+    parser.add_argument(
+        "-map",
+        "--max-abs-position",
+        help="maximum absolute length of an input sequence; set this to a very large value to be able "
+        "to generalize to longer sequences than in the dataset; if a sequence longer than the "
+        "passed in value is passed into the dataset, max_abs_position is set to that value not "
+        "the passed in; if loading from checkpoint, this will be overwritten by saved hparams; "
+        "default: 20000",
+        type=int,
+    )
+    parser.add_argument(
+        "-vs",
+        "--vocab-size",
+        help="length of the vocabulary in which the input training data has been tokenized. if "
+        "loading from checkpoint, this will be overwritten by saved hparams; default: 416 (size "
+        "of Oore et. al MIDI vocabulary)",
+        type=check_positive,
+    )
+    parser.add_argument(
+        "-nb",
+        "--no-bias",
+        help="flag to not use a bias in the linear layers of the music transformer; if loading from "
+        "checkpoint, this will be overwritten by saved hparams; default: False",
+        action="store_false",
+    )
+    parser.add_argument(
+        "-dr",
+        "--dropout",
+        help="dropout rate for training the model; if loading from checkpoint, this will be "
+        "overwritten by saved hparams; default: 0.1",
+    )
+    parser.add_argument(
+        "-le",
+        "--layernorm-eps",
+        help="epsilon in layernorm layers to avoid zero division; if loading from checkpoint, "
+        "this will be overwritten by saved hparams; default: 1e-6",
+    )
+
+    # agg server arguments
+    parser.add_argument("--server_url", help="aggregation server url", type=str, dest="server_url")
+    parser.add_argument("--blockchain_url", help="blockchain JSON RPC url", type=str, dest="blockchain_url")
+    parser.add_argument("--contract_address", help="fl task contract address", type=str, dest="contract_address")
 
     args = parser.parse_args()
+    print(f"iter_per_epoch: {args.iter_per_epoch}")
 
     # fix optional parameters
     batch_size_ = 32 if args.batch_size is None else args.batch_size
@@ -421,30 +542,65 @@ if __name__ == "__main__":
 
     # fix hyperparameters
     hparams["d_model"] = args.d_model if args.d_model else hparams["d_model"]
-    hparams["num_layers"] = args.num_layers if args.num_layers else hparams["num_layers"]
+    hparams["num_layers"] = (
+        args.num_layers if args.num_layers else hparams["num_layers"]
+    )
     hparams["num_heads"] = args.num_heads if args.num_heads else hparams["num_heads"]
     hparams["d_ff"] = args.d_feedforward if args.d_feedforward else hparams["d_ff"]
-    hparams["max_rel_dist"] = args.max_rel_dist if args.max_rel_dist else hparams["max_rel_dist"]
-    hparams["max_abs_position"] = args.max_abs_position if args.max_abs_position else hparams["max_abs_position"]
-    hparams["vocab_size"] = args.vocab_size if args.vocab_size else hparams["vocab_size"]
+    hparams["max_rel_dist"] = (
+        args.max_rel_dist if args.max_rel_dist else hparams["max_rel_dist"]
+    )
+    hparams["max_abs_position"] = (
+        args.max_abs_position if args.max_abs_position else hparams["max_abs_position"]
+    )
+    hparams["vocab_size"] = (
+        args.vocab_size if args.vocab_size else hparams["vocab_size"]
+    )
     hparams["bias"] = args.no_bias
     hparams["dropout"] = args.dropout if args.dropout else hparams["dropout"]
-    hparams["layernorm_eps"] = args.layernorm_eps if args.layernorm_eps else hparams["layernorm_eps"]
+    hparams["layernorm_eps"] = (
+        args.layernorm_eps if args.layernorm_eps else hparams["layernorm_eps"]
+    )
+
+    privkey = os.getenv("FL_PRIVKEY")
+    assert privkey is not None
 
     # set up the trainer
     print("Setting up the trainer...")
-    trainer = MusicTransformerTrainer(hparams, args.datapath, batch_size_, warmup_steps_,
-                                      args.ckpt_path, args.load_checkpoint)
+    contract = FLTask(
+        url=args.blockchain_url,
+        privkey=privkey,
+        contract_address=args.contract_address
+    )
+    client = TrainWorker(server_url=args.server_url, contract=contract, num_samples=0)
+    trainer = MusicTransformerTrainer(
+        client,
+        hparams,
+        args.datapath,
+        batch_size_,
+        warmup_steps_,
+        args.ckpt_path,
+        args.load_checkpoint,
+    )
+    client.num_samples = len(trainer.train_ds)
+    client.start()
     print()
 
-    # train the model
-    trainer.fit(args.epochs)
+    while True:
+        try:
+            print("Waiting for task")
+            epochs = client.wait_start()
+            print("task started")
+            # train the model
+            trainer.fit(epochs, args.iter_per_epoch)
 
-    # done training, save the model
-    print("Saving...")
-    save_file = {
-        "state_dict": trainer.model.state_dict(),
-        "hparams": trainer.hparams
-    }
-    torch.save(save_file, args.save_path)
-    print("Done!")
+            # done training, save the model
+            print("Saving...")
+            save_file = {"state_dict": trainer.model.state_dict(), "hparams": trainer.hparams}
+            torch.save(save_file, args.save_path)
+            print("Done!")
+        except KeyboardInterrupt:
+            break
+    
+    client.stop()
+    client.join()
