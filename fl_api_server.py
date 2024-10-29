@@ -71,8 +71,10 @@ class GetTaskResp(BaseModel):
     max_round: int
     latest_partial_time: int
     latest_aggregation_time: int
-    hf_repo_url: str
+    model_url: str
     num_samples: int
+    task_type: str
+    model_type: str
 
 
 @app.get("/task", response_model=GetTaskResp)
@@ -129,8 +131,10 @@ async def get_task(
         max_round=task.max_round,
         latest_partial_time=latest_partial_time,
         latest_aggregation_time=latest_aggregation_time,
-        hf_repo_url=task.hf_repo_url,
+        model_url=task.hf_repo_url,
         num_samples=total_num_samples,
+        task_type="Decentralized Pretraining",
+        model_type="MusicGen"
     )
 
 
