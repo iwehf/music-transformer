@@ -6,14 +6,14 @@ def main():
     resp = requests.post(
         url,
         json={
-            "worker_count": 3,
+            "worker_count": 7,
             "max_round": 500,
         },
     )
     resp.raise_for_status()
     resp_data = resp.json()
-    task_id = resp_data["task_id"]
-    print(task_id)
+    status = resp_data["status"]
+    print(status)
 
 
 if __name__ == "__main__":

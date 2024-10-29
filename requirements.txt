@@ -8,3 +8,5 @@ aiosqlite
 fastapi
 uvicorn
 websockets
+web3
+tenacity
