@@ -6,7 +6,7 @@ import sqlalchemy as sa
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import db
@@ -76,6 +76,9 @@ class GetTaskResp(BaseModel):
     task_type: str
     model_type: str
 
+    model_config = ConfigDict(
+        protected_namespaces=()
+    )
 
 @app.get("/task", response_model=GetTaskResp)
 async def get_task(
