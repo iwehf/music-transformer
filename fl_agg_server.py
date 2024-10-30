@@ -138,7 +138,8 @@ class TaskManager(object):
                 for chunk in chunks:
                     await websocket.send_bytes(chunk)
 
-            await asyncio.gather(send_agg_data(ws) for ws in self._workers.values())
+            futs = [asyncio.create_task(send_agg_data(ws)) for ws in self._workers.values()]
+            await asyncio.gather(*futs)
 
             self._send_data_time += time.time() - t0
 

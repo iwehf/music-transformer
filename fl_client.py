@@ -111,6 +111,7 @@ class TrainWorker(threading.Thread):
                         websocket.send(tx_hash)
                         print(f"task {task_id} round {curr_round} upload data tx hash")
                         chunks_info_str = websocket.recv()
+                        assert isinstance(chunks_info_str, str)
                         chunks_info = json.loads(chunks_info_str)
                         assert "chunks" in chunks_info
                         chunks_size = chunks_info["chunks"]
