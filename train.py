@@ -267,7 +267,7 @@ class MusicTransformerTrainer:
 
         return
 
-    def fit(self, epochs):
+    def fit(self, epochs, iter_per_epoch: int = 100):
         """
         Training loop to fit the model to the data stored at the passed in datapath. If KeyboardInterrupt at anytime
         during the training loop, and if progresss being printed, this method will save a checkpoint at the 
@@ -295,7 +295,6 @@ class MusicTransformerTrainer:
 
                 model.train()
                 iterations = 0
-                iter_per_epoch = 100
                 while iterations < iter_per_epoch:
                     for train_inp, train_tar in self.train_dl:
                         loss = train_step(
@@ -310,23 +309,32 @@ class MusicTransformerTrainer:
                         if iterations == iter_per_epoch:
                             break
 
-                model.eval()
-                for val_inp, val_tar in self.val_dl:
-                    loss = val_step(model, val_inp, val_tar)
-                    val_epoch_losses.append(loss)
+                train_mean = sum(train_epoch_losses) / len(train_epoch_losses)
+                self.train_losses.append(train_mean)
+                train_losses.append(train_mean)
+                print(
+                    f"Epoch {epoch } Train Time taken {round(time.time() - start, 2)} seconds "
+                    f"Train Loss {train_losses[-1]}"
+                )
+
+                val_start = time.time()
+                with torch.no_grad():
+                    model.eval()
+                    for val_inp, val_tar in self.val_dl:
+                        loss = val_step(model, val_inp, val_tar)
+                        val_epoch_losses.append(loss)
 
                 # mean losses for the epoch
-                train_mean = sum(train_epoch_losses) / len(train_epoch_losses)
                 val_mean = sum(val_epoch_losses) / len(val_epoch_losses)
 
                 # store complete history of losses in member lists and relative history for this session in output lists
-                self.train_losses.append(train_mean)
-                train_losses.append(train_mean)
                 self.val_losses.append(val_mean)
                 val_losses.append(val_mean)
 
-                print(f"Epoch {epoch } Time taken {round(time.time() - start, 2)} seconds "
-                    f"Train Loss {train_losses[-1]} Val Loss {val_losses[-1]}")
+                print(
+                    f"Epoch {epoch } Validation Time taken {round(time.time() - val_start, 2)} seconds "
+                    f"Val Loss {val_losses[-1]}"
+                )
                 start = time.time()
 
         except KeyboardInterrupt:
@@ -373,6 +381,14 @@ if __name__ == "__main__":
     parser.add_argument("-w", "--warmup-steps", help="number of warmup steps for transformer learning rate scheduler; "
                                                      "if loading from checkpoint, this will be overwritten by saved "
                                                      "value; default: 4000", type=int)
+    parser.add_argument(
+        "-ipe",
+        "--iter-per-epoch",
+        help="iteration per epoch, default: 100",
+        type=int,
+        default=100,
+        dest="iter_per_epoch"
+    )
 
     # hyperparameters
     parser.add_argument("-d", "--d-model",
@@ -438,7 +454,7 @@ if __name__ == "__main__":
     print()
 
     # train the model
-    trainer.fit(args.epochs)
+    trainer.fit(args.epochs, args.iter_per_epoch)
 
     # done training, save the model
     print("Saving...")

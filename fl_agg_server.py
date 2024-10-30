@@ -24,6 +24,7 @@ class WorkerRequest(BaseModel):
     worker_id: int
     type: Literal["data", "metric", "leave"]
     round: Optional[int] = None
+    chunks: int = 1
 
 
 class TaskManager(object):
@@ -185,8 +186,11 @@ class TaskManager(object):
     async def process_data_request(self, request: WorkerRequest, websocket: WebSocket):
         assert request.type == "data"
         assert self._round == request.round
-        data_bytes = await websocket.receive_bytes()
-        return data_bytes
+        data_bytes = bytearray()
+        for _ in range(request.chunks):
+            chunk = await websocket.receive_bytes()
+            data_bytes.extend(chunk)
+        return bytes(data_bytes)
 
     async def record_upload_data_log(self, address: str, websocket: WebSocket):
         tx_hash = await websocket.receive_bytes()

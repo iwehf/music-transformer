@@ -444,7 +444,7 @@ if __name__ == "__main__":
         type=int,
     )
     parser.add_argument(
-        "-ipe"
+        "-ipe",
         "--iter-per-epoch",
         help="iteration per epoch, default: 100",
         type=int,

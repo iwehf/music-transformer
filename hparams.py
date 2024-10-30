@@ -48,3 +48,16 @@ hparams_large = {
     "dropout": 0.1,
     "layernorm_eps": 1e-6
 }
+
+hparams_xlarge = {
+    "d_model": 512,
+    "num_layers": 24,
+    "num_heads": 16,
+    "d_ff": 2048,
+    "max_rel_dist": 1024,
+    "max_abs_position": 0,
+    "vocab_size": vocab_size,
+    "bias": True,
+    "dropout": 0.1,
+    "layernorm_eps": 1e-6
+}

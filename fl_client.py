@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import threading
 from queue import SimpleQueue
 from typing import Dict, Optional
@@ -87,15 +88,19 @@ class TrainWorker(threading.Thread):
                     type = input["type"]
                     if type == "data":
                         data = input["data"]
+                        data_bytes = dump_data(data)
+                        chunk_size = 2 ** 20
+                        chunks = math.ceil(len(data_bytes) / chunk_size)
                         request = {
                             "task_id": task_id,
                             "worker_id": worker_id,
                             "round": curr_round,
                             "type": "data",
+                            "chunks": chunks
                         }
                         websocket.send(json.dumps(request))
-                        data_bytes = dump_data(data)
-                        websocket.send(data_bytes)
+                        for start in range(0, len(data_bytes), chunk_size):
+                            websocket.send(data_bytes[start: start + chunk_size])
                         print(f"task {task_id} round {curr_round} upload data")
                         receipt = self.upload_data(task_id, curr_round, worker_id)
                         tx_hash = receipt["transactionHash"]
