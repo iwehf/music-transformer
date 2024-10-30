@@ -1,16 +1,16 @@
-import os
 import json
-import math
+import os
 import threading
 from queue import SimpleQueue
 from typing import Dict, Optional
 
 from websockets.sync.client import connect
 
-from model import MusicTransformer
-from hparams import hparams
 from fl_task_contract import FLTask
-from fl_utils import load_data, dump_data
+from fl_utils import dump_data, load_data
+from hparams import hparams
+from model import MusicTransformer
+
 
 class TrainWorker(threading.Thread):
     def __init__(self, server_url: str, contract: FLTask, num_samples: int) -> None:
@@ -32,16 +32,10 @@ class TrainWorker(threading.Thread):
         return self.max_round
 
     def send_data(self, data):
-        self.input_queue.put({
-            "type": "data",
-            "data": data
-        })
+        self.input_queue.put({"type": "data", "data": data})
 
     def send_metric(self, metric):
-        self.input_queue.put({
-            "type": "metric",
-            "data": metric
-        })
+        self.input_queue.put({"type": "metric", "data": metric})
 
     def get_agg_data(self):
         return self.output_queue.get()
@@ -60,7 +54,14 @@ class TrainWorker(threading.Thread):
 
     def run(self):
         with connect(self.url, max_size=None) as websocket:
-            websocket.send(json.dumps({"address": self.contract.acct.address, "num_samples": self.num_samples}))
+            websocket.send(
+                json.dumps(
+                    {
+                        "address": self.contract.acct.address,
+                        "num_samples": self.num_samples,
+                    }
+                )
+            )
             while not self.stop_event.is_set():
                 self.start_event.clear()
                 task_msg = websocket.recv()
@@ -73,7 +74,7 @@ class TrainWorker(threading.Thread):
                 max_round = task_info["max_round"]
                 self.max_round = max_round
                 print(f"task {task_id} max rounds {max_round}")
-                
+
                 worker_id = self.join_task(task_id)
                 websocket.send(json.dumps({"task_id": task_id, "worker_id": worker_id}))
                 print(f"task {task_id} worker id {worker_id}")
@@ -89,27 +90,39 @@ class TrainWorker(threading.Thread):
                     if type == "data":
                         data = input["data"]
                         data_bytes = dump_data(data)
-                        chunk_size = 2 ** 20
-                        chunks = math.ceil(len(data_bytes) / chunk_size)
+                        chunk_size = 2**20
+                        chunks = [
+                            data_bytes[start : start + chunk_size]
+                            for start in range(0, len(data_bytes), chunk_size)
+                        ]
                         request = {
                             "task_id": task_id,
                             "worker_id": worker_id,
                             "round": curr_round,
                             "type": "data",
-                            "chunks": chunks
+                            "chunks": len(chunks),
                         }
                         websocket.send(json.dumps(request))
-                        for start in range(0, len(data_bytes), chunk_size):
-                            websocket.send(data_bytes[start: start + chunk_size])
+                        for chunk in chunks:
+                            websocket.send(chunk)
                         print(f"task {task_id} round {curr_round} upload data")
                         receipt = self.upload_data(task_id, curr_round, worker_id)
                         tx_hash = receipt["transactionHash"]
                         websocket.send(tx_hash)
                         print(f"task {task_id} round {curr_round} upload data tx hash")
-                        agg_data_bytes = websocket.recv()
-                        assert isinstance(agg_data_bytes, bytes)
+                        chunks_info_str = websocket.recv()
+                        chunks_info = json.loads(chunks_info_str)
+                        assert "chunks" in chunks_info
+                        chunks_size = chunks_info["chunks"]
+                        agg_data_bytes = b""
+                        for _ in range(chunks_size):
+                            chunk = websocket.recv()
+                            assert isinstance(chunk, bytes)
+                            agg_data_bytes += chunk
                         agg_data = load_data(agg_data_bytes)
-                        print(f"task {task_id} round {curr_round} receive aggregated data")
+                        print(
+                            f"task {task_id} round {curr_round} receive aggregated data"
+                        )
                         self.output_queue.put(agg_data)
                         curr_round += 1
                         if curr_round <= max_round:
@@ -127,14 +140,13 @@ class TrainWorker(threading.Thread):
                         }
                         websocket.send(json.dumps(request))
                         websocket.send(json.dumps(metric))
-                
+
                 leave_request = {
                     "task_id": task_id,
                     "worker_id": worker_id,
                     "type": "leave",
                 }
                 websocket.send(json.dumps(leave_request))
-                
 
 
 def main():
@@ -167,6 +179,7 @@ def main():
             break
     client.stop()
     client.join()
+
 
 if __name__ == "__main__":
     main()

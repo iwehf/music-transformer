@@ -127,8 +127,18 @@ class TaskManager(object):
 
             t0 = time.time()
             data_bytes = dump_data(global_data)
-            for websocket in self._workers.values():
-                await websocket.send_bytes(data_bytes)
+            chunk_size = 2**20
+            chunks = [
+                data_bytes[start : start + chunk_size]
+                for start in range(0, len(data_bytes), chunk_size)
+            ]
+
+            async def send_agg_data(websocket: WebSocket):
+                await websocket.send_json({"chunks": len(chunks)})
+                for chunk in chunks:
+                    await websocket.send_bytes(chunk)
+
+            await asyncio.gather(send_agg_data(ws) for ws in self._workers.values())
 
             self._send_data_time += time.time() - t0
 
@@ -460,12 +470,10 @@ async def main():
     try:
         task_fut = asyncio.create_task(run_pending_tasks())
         server_fut = asyncio.create_task(server.serve())
-        await asyncio.gather(
-            task_fut, server_fut
-        )
+        await asyncio.gather(task_fut, server_fut)
     finally:
         await db.close()
 
+
 if __name__ == "__main__":
     asyncio.run(main())
-
