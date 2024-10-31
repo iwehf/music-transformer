@@ -56,7 +56,7 @@ class TrainWorker(threading.Thread):
             dump_data(data, f)
             f.seek(0)
             with requests.post(
-                f"{self.url}/task/data",
+                f"http://{self.url}/task/data",
                 data={"task_id": task_id, "round": round, "worker_id": worker_id},
                 files={"file": f},
             ) as resp:
@@ -67,7 +67,7 @@ class TrainWorker(threading.Thread):
 
     def recv_agg_data(self, task_id: int, round: int):
         with requests.get(
-            f"{self.url}/task/data",
+            f"http://{self.url}/task/data",
             params={"task_id": task_id, "round": round},
             stream=True,
         ) as resp:
@@ -80,7 +80,7 @@ class TrainWorker(threading.Thread):
         return data
 
     def run(self):
-        with connect(f"{self.url}/ws", max_size=None) as websocket:
+        with connect(f"ws://{self.url}/ws", max_size=None) as websocket:
             websocket.send(
                 json.dumps(
                     {
@@ -171,7 +171,7 @@ def main():
         privkey=privkey,
         contract_address=contract_address,
     )
-    server_url = "ws://localhost:8000"
+    server_url = "localhost:8000"
     client = TrainWorker(server_url=server_url, contract=contract, num_samples=100)
     client.start()
 
