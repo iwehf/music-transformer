@@ -456,7 +456,7 @@ async def upload_data(
     dst_file = await asyncio.to_thread(recv_data_file)
 
     task_manager = task_managers[task_id]
-    await task_manager.recv_data(round, dst_file)
+    await task_manager.recv_data(worker_id, dst_file)
     return UploadDataResp()
 
 
