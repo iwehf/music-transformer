@@ -16,14 +16,14 @@ class Task(Base, BaseMixin):
     __tablename__ = "tasks"
 
     task_id: Mapped[int] = mapped_column(sa.Integer, index=True, nullable=False)
-    creator: Mapped[str] = mapped_column(sa.String, index=False, nullable=False)
+    creator: Mapped[str] = mapped_column(sa.String(length=255), index=False, nullable=False)
     worker_count: Mapped[int] = mapped_column(sa.Integer, index=False, nullable=False)
     max_round: Mapped[int] = mapped_column(sa.Integer, index=False, nullable=False)
     curr_round: Mapped[int] = mapped_column(
         sa.Integer, index=False, nullable=False, default=0
     )
     hf_repo_url: Mapped[str] = mapped_column(
-        sa.String, index=False, nullable=False, default=""
+        sa.String(length=255), index=False, nullable=False, default=""
     )
     status: Mapped[TaskStatus] = mapped_column(
         sa.Enum(TaskStatus), index=True, nullable=False, default=TaskStatus.Pending
@@ -34,7 +34,7 @@ class TaskWorker(Base, BaseMixin):
     __tablename__ = "task_workers"
 
     task_id: Mapped[int] = mapped_column(sa.Integer, index=True, nullable=False)
-    address: Mapped[str] = mapped_column(sa.String, index=False, nullable=False)
+    address: Mapped[str] = mapped_column(sa.String(length=255), index=False, nullable=False)
     num_samples: Mapped[int] = mapped_column(sa.Integer, index=False, nullable=False)
 
 
@@ -53,8 +53,8 @@ class TaskLog(Base, BaseMixin):
     type: Mapped[TaskLogType] = mapped_column(
         sa.Enum(TaskLogType), index=True, nullable=False
     )
-    address: Mapped[str] = mapped_column(sa.String, index=False, nullable=False)
-    tx_hash: Mapped[str] = mapped_column(sa.String, index=False, nullable=False)
+    address: Mapped[str] = mapped_column(sa.String(length=255), index=False, nullable=False)
+    tx_hash: Mapped[str] = mapped_column(sa.String(length=255), index=False, nullable=False)
     round: Mapped[int] = mapped_column(sa.Integer, index=False, nullable=False)
 
 

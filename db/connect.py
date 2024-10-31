@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 import threading
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from anyio import fail_after
-from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import (AsyncEngine, AsyncSession,
                                     async_sessionmaker, create_async_engine)
 
@@ -33,21 +31,13 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
 session_scope = asynccontextmanager(get_session)
 
 
-async def init(db: str):
+async def init(db_conn_str: str):
     if hasattr(_local, "session") or hasattr(_local, "engine"):
         raise ValueError("db has been initialized")
 
-    if not os.path.exists(db):
-        dirname = os.path.dirname(db)
-        if len(dirname) > 0:
-            os.makedirs(dirname, exist_ok=True)
-
-    connection = f"sqlite+aiosqlite:///{db}"
     engine = create_async_engine(
-        connection,
+        db_conn_str,
         pool_pre_ping=True,
-        connect_args={"check_same_thread": False, "timeout": 5},
-        poolclass=NullPool
         # echo=True,
     )
     session = async_sessionmaker(engine, autoflush=False, expire_on_commit=False)

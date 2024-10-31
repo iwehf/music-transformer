@@ -1,11 +1,15 @@
 import asyncio
 import os
+import shutil
 import time
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 import sqlalchemy as sa
 import uvicorn
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import (Depends, FastAPI, File, Form, UploadFile, WebSocket,
+                     WebSocketDisconnect)
+from fastapi.exceptions import HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +17,7 @@ import db
 from fl_task_contract import AsyncFLTask
 from fl_utils import dump_data, load_data
 
-db_filename = os.getenv("FL_DB", "fl_server.db")
-
+data_dir = os.getenv("FL_DATA_DIR", "data")
 
 app = FastAPI()
 
@@ -50,14 +53,16 @@ class TaskManager(object):
         self._round = 0
 
         self._data_condition = asyncio.Condition()
-        self._data_pool: Dict[int, bytes] = {}
+        self._data_pool: Dict[int, str] = {}
+
+        self._agg_data_files: Dict[int, str] = {}
 
         self._metric_condition = asyncio.Condition()
         self._metric_pool: Dict[int, Dict[str, Any]] = {}
 
-        self._recv_data_time = 0
-        self._agg_data_time = 0
-        self._send_data_time = 0
+
+    def get_agg_data_file(self, round: int) -> Optional[str]:
+        return self._agg_data_files.get(round)
 
     async def close_all(self, reason: str = ""):
         futs = []
@@ -92,10 +97,10 @@ class TaskManager(object):
             while len(self._workers) > 0:
                 await self._worker_condition.wait()
 
-    async def recv_data(self, worker_id: int, data_bytes: bytes):
+    async def recv_data(self, worker_id: int, dst_file: str):
         async with self._data_condition:
             assert worker_id not in self._data_pool
-            self._data_pool[worker_id] = data_bytes
+            self._data_pool[worker_id] = dst_file
             self._data_condition.notify()
 
     async def agg_data(self):
@@ -107,48 +112,35 @@ class TaskManager(object):
 
                 round = self._round
 
-                t0 = time.time()
-                global_data = None
-                for data_bytes in self._data_pool.values():
-                    data = load_data(data_bytes)
-                    if global_data is None:
-                        global_data = data
-                    else:
-                        for k in data:
-                            assert k in global_data
-                            global_data[k].add_(data[k])
+                def aggregate_data(data_files: List[str]):
+                    global_data = None
+                    for data_file in data_files:
+                        data = load_data(data_file)
+                        if global_data is None:
+                            global_data = data
+                        else:
+                            for k in data:
+                                assert k in global_data
+                                global_data[k].add_(data[k])
 
-                assert global_data is not None
-                for k in global_data:
-                    global_data[k].div_(self.worker_count)
+                    assert global_data is not None
+                    for k in global_data:
+                        global_data[k].div_(len(data_files))
+                    agg_data_file = os.path.join(
+                        data_dir, str(self.task_id), str(round), "agg_data.pt"
+                    )
+                    dump_data(global_data, agg_data_file)
+                    return agg_data_file
 
+                agg_data_file = await asyncio.to_thread(
+                    aggregate_data, list(self._data_pool.values())
+                )
+                self._agg_data_files[round] = agg_data_file
                 self._data_pool.clear()
-                self._agg_data_time += time.time() - t0
 
-            t0 = time.time()
-            data_bytes = dump_data(global_data)
-            chunk_size = 2**20
-            chunks = [
-                data_bytes[start : start + chunk_size]
-                for start in range(0, len(data_bytes), chunk_size)
-            ]
+            for ws in self._workers.values():
+                await ws.send_text("data ready")
 
-            async def send_agg_data(websocket: WebSocket):
-                await websocket.send_json({"chunks": len(chunks)})
-                for chunk in chunks:
-                    await websocket.send_bytes(chunk)
-
-            futs = [asyncio.create_task(send_agg_data(ws)) for ws in self._workers.values()]
-            await asyncio.gather(*futs)
-
-            self._send_data_time += time.time() - t0
-
-            print(f"recv data time: {self._recv_data_time}")
-            print(f"agg data time: {self._agg_data_time}")
-            print(f"send data time: {self._send_data_time}")
-            self._recv_data_time = 0
-            self._agg_data_time = 0
-            self._send_data_time = 0
             print(f"broadcast aggregated data of round {round} to workers")
             await self.aggregate_data(round)
             if round + 1 <= self.max_round:
@@ -193,15 +185,6 @@ class TaskManager(object):
                 sess.add(metric)
                 await sess.commit()
             print(f"loss of round {round}: {avg_loss}")
-
-    async def process_data_request(self, request: WorkerRequest, websocket: WebSocket):
-        assert request.type == "data"
-        assert self._round == request.round
-        data_bytes = bytearray()
-        for _ in range(request.chunks):
-            chunk = await websocket.receive_bytes()
-            data_bytes.extend(chunk)
-        return bytes(data_bytes)
 
     async def record_upload_data_log(self, address: str, websocket: WebSocket):
         tx_hash = await websocket.receive_bytes()
@@ -311,13 +294,7 @@ class TaskManager(object):
                 assert request.task_id == self.task_id
                 assert request.worker_id == worker_id
                 if request.type == "data":
-                    t0 = time.time()
-                    payload = await self.process_data_request(request, websocket)
-                    await asyncio.gather(
-                        self.record_upload_data_log(address, websocket),
-                        self.recv_data(worker_id, payload),
-                    )
-                    self._recv_data_time += time.time() - t0
+                    await self.record_upload_data_log(address, websocket)
                     print(f"worker {worker_id} upload data of round {request.round}")
                 elif request.type == "metric":
                     metric = await self.process_metric_request(request, websocket)
@@ -345,15 +322,6 @@ contract = AsyncFLTask(
 )
 task_managers: Dict[int, TaskManager] = {}
 pending_tasks = asyncio.Queue()
-
-
-class CreateTaskInput(BaseModel):
-    worker_count: int
-    max_round: int
-
-
-class CreateTaskResp(BaseModel):
-    task_id: int
 
 
 async def run_pending_tasks():
@@ -463,11 +431,59 @@ async def handle_client(
         print("worker leave")
 
 
+class UploadDataResp(BaseModel):
+    status: Literal["success", "error"] = "success"
+
+@app.post("/task/data", response_model=UploadDataResp)
+async def upload_data(
+    task_id: Annotated[int, Form],
+    round: Annotated[int, Form],
+    worker_id: Annotated[int, Form],
+    file: Annotated[UploadFile, File()],
+):
+    if task_id not in task_managers:
+        raise HTTPException(400, "No such task")
+
+    def recv_data_file():
+        dst_dir = os.path.join(data_dir, str(task_id), str(round))
+        if not os.path.exists(dst_dir):
+            os.makedirs(dst_dir)
+        dst_file = os.path.join(dst_dir, f"{worker_id}.pt")
+        with open(dst_file, mode="wb") as f:
+            shutil.copyfileobj(file.file, f)
+        return dst_file
+
+    dst_file = await asyncio.to_thread(recv_data_file)
+
+    task_manager = task_managers[task_id]
+    await task_manager.recv_data(round, dst_file)
+    return UploadDataResp()
+
+
+@app.get("/task/data")
+async def get_data(task_id: int, round: int):
+    if task_id not in task_managers:
+        raise HTTPException(400, "No such task")
+
+    task_manager = task_managers[task_id]
+
+    file = task_manager.get_agg_data_file(round)
+    if file is None:
+        raise HTTPException(400, "No such round")
+
+    return FileResponse(
+        file, media_type="application/octet-stream", filename="agg_data.pt"
+    )
+
+
 async def main():
-    config = uvicorn.Config(app, host="127.0.0.1", port=8001)
+    db_conn_str = os.getenv("FL_DB")
+    assert db_conn_str is not None
+
+    config = uvicorn.Config(app, host="0.0.0.0", port=8001)
     server = uvicorn.Server(config)
 
-    await db.init(db_filename)
+    await db.init(db_conn_str)
     try:
         task_fut = asyncio.create_task(run_pending_tasks())
         server_fut = asyncio.create_task(server.serve())

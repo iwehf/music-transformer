@@ -2,8 +2,10 @@ import json
 import os
 import threading
 from queue import SimpleQueue
-from typing import Dict, Optional
+from tempfile import TemporaryFile
+from typing import Optional
 
+import requests
 from websockets.sync.client import connect
 
 from fl_task_contract import FLTask
@@ -49,11 +51,36 @@ class TrainWorker(threading.Thread):
         worker_id = events[0]["args"]["workerID"]
         return worker_id
 
-    def upload_data(self, task_id: int, round: int, worker_id: int):
+    def upload_data(self, task_id: int, round: int, worker_id: int, data):
+        with TemporaryFile() as f:
+            dump_data(data, f)
+            f.seek(0)
+            with requests.post(
+                f"{self.url}/task/data",
+                data={"task_id": task_id, "round": round, "worker_id": worker_id},
+                files={"file": f},
+            ) as resp:
+                resp.raise_for_status()
+                status = resp.json()["status"]
+                assert status == "success"
         return self.contract.upload_data(task_id, round, worker_id)
 
+    def recv_agg_data(self, task_id: int, round: int):
+        with requests.get(
+            f"{self.url}/task/data",
+            params={"task_id": task_id, "round": round},
+            stream=True,
+        ) as resp:
+            resp.raise_for_status()
+            with TemporaryFile() as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                f.seek(0)
+                data = load_data(f)
+        return data
+
     def run(self):
-        with connect(self.url, max_size=None) as websocket:
+        with connect(f"{self.url}/ws", max_size=None) as websocket:
             websocket.send(
                 json.dumps(
                     {
@@ -89,38 +116,22 @@ class TrainWorker(threading.Thread):
                     type = input["type"]
                     if type == "data":
                         data = input["data"]
-                        data_bytes = dump_data(data)
-                        chunk_size = 2**20
-                        chunks = [
-                            data_bytes[start : start + chunk_size]
-                            for start in range(0, len(data_bytes), chunk_size)
-                        ]
                         request = {
                             "task_id": task_id,
                             "worker_id": worker_id,
                             "round": curr_round,
                             "type": "data",
-                            "chunks": len(chunks),
                         }
                         websocket.send(json.dumps(request))
-                        for chunk in chunks:
-                            websocket.send(chunk)
                         print(f"task {task_id} round {curr_round} upload data")
-                        receipt = self.upload_data(task_id, curr_round, worker_id)
+                        receipt = self.upload_data(task_id, curr_round, worker_id, data)
                         tx_hash = receipt["transactionHash"]
                         websocket.send(tx_hash)
                         print(f"task {task_id} round {curr_round} upload data tx hash")
-                        chunks_info_str = websocket.recv()
-                        assert isinstance(chunks_info_str, str)
-                        chunks_info = json.loads(chunks_info_str)
-                        assert "chunks" in chunks_info
-                        chunks_size = chunks_info["chunks"]
-                        agg_data_bytes = b""
-                        for _ in range(chunks_size):
-                            chunk = websocket.recv()
-                            assert isinstance(chunk, bytes)
-                            agg_data_bytes += chunk
-                        agg_data = load_data(agg_data_bytes)
+                        msg = websocket.recv()
+                        assert isinstance(msg, str)
+                        assert msg == "data ready"
+                        agg_data = self.recv_agg_data(task_id, curr_round)
                         print(
                             f"task {task_id} round {curr_round} receive aggregated data"
                         )
@@ -160,7 +171,7 @@ def main():
         privkey=privkey,
         contract_address=contract_address,
     )
-    server_url = "ws://localhost:8000/ws"
+    server_url = "ws://localhost:8000"
     client = TrainWorker(server_url=server_url, contract=contract, num_samples=100)
     client.start()
 

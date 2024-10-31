@@ -4,9 +4,10 @@ torch>=2.1.0
 numpy>=1.19.2
 pydantic
 sqlalchemy
-aiosqlite
+aiomysql
 fastapi
 uvicorn
 websockets
 web3
 tenacity
+python-multipart

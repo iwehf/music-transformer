@@ -11,12 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import db
 
-db_filename = os.getenv("FL_DB", "fl_server.db")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await db.init(db_filename)
+    db_conn_str = os.getenv("FL_DB")
+    assert db_conn_str is not None
+    await db.init(db_conn_str)
     yield
     await db.close()
 
