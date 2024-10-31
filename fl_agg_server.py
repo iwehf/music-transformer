@@ -436,9 +436,9 @@ class UploadDataResp(BaseModel):
 
 @app.post("/task/data", response_model=UploadDataResp)
 async def upload_data(
-    task_id: Annotated[int, Form],
-    round: Annotated[int, Form],
-    worker_id: Annotated[int, Form],
+    task_id: Annotated[int, Form()],
+    round: Annotated[int, Form()],
+    worker_id: Annotated[int, Form()],
     file: Annotated[UploadFile, File()],
 ):
     if task_id not in task_managers:
