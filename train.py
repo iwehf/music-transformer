@@ -294,8 +294,22 @@ class MusicTransformerTrainer:
                 val_epoch_losses = []
 
                 model.train()
-                iterations = 0
-                while iterations < iter_per_epoch:
+                if iter_per_epoch > 0:
+                    iterations = 0
+                    while iterations < iter_per_epoch:
+                        for train_inp, train_tar in self.train_dl:
+                            loss = train_step(
+                                model,
+                                self.optimizer,
+                                self.scheduler,
+                                train_inp,
+                                train_tar,
+                            )
+                            train_epoch_losses.append(loss)
+                            iterations += 1
+                            if iterations == iter_per_epoch:
+                                break
+                else:
                     for train_inp, train_tar in self.train_dl:
                         loss = train_step(
                             model,
@@ -305,9 +319,6 @@ class MusicTransformerTrainer:
                             train_tar,
                         )
                         train_epoch_losses.append(loss)
-                        iterations += 1
-                        if iterations == iter_per_epoch:
-                            break
 
                 train_mean = sum(train_epoch_losses) / len(train_epoch_losses)
                 self.train_losses.append(train_mean)
