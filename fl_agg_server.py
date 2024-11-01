@@ -106,11 +106,11 @@ class TaskManager(object):
     async def agg_data(self):
         await self.start_round(1)
         while True:
+            round = self._round
+
             async with self._data_condition:
                 while len(self._data_pool) < self.worker_count:
                     await self._data_condition.wait()
-
-                round = self._round
 
                 def aggregate_data(data_files: List[str]):
                     global_data = None
@@ -143,10 +143,15 @@ class TaskManager(object):
 
             print(f"broadcast aggregated data of round {round} to workers")
             await self.aggregate_data(round)
+
+            round_dir = os.path.join(data_dir, str(self.task_id), str(round))
             if round + 1 <= self.max_round:
                 await self.start_round(round + 1)
+                await asyncio.to_thread(shutil.rmtree, round_dir)
             else:
+                await asyncio.to_thread(shutil.rmtree, round_dir)
                 break
+            
 
     async def recv_metric(self, worker_id: int, metric: Dict[str, Any]):
         async with self._metric_condition:
